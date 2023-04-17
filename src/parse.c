@@ -4,7 +4,7 @@ int
 init_parser(struct parser *parser)
 {
 	memset(parser, 0, sizeof(*parser));
-	parser->root = rx_alloc(&(struct regex_node) { .flags = RXFLAG_EMPTYGROUP, .nNodes = 0, .nodes = NULL });
+	parser->root = rx_allocempty();
 	parser->index = -1;
 	return 0;
 }
@@ -26,7 +26,6 @@ parser_setindexnode(struct parser *parser, node_t node)
 		return;
 	parser->hasIndex |= 1 << parser->index;
 	parser->indexNodes[parser->index] = node;
-	nodes[node].flags |= RXFLAG_CONTEXT1 << parser->index;
 	for(r = parser->requests, n = parser->nRequests; n; r++) {
 		n--;
 		if((int) r->index == parser->index) {
@@ -41,21 +40,11 @@ parser_setindexnode(struct parser *parser, node_t node)
 static int
 parser_setvariable(struct parser *parser, const char *name, node_t node)
 {
-	node_t *deepestNodes = NULL;
-	uint32_t nDeepestNodes = 0;
-
 	for(uint32_t i = 0; i < parser->nVariables; i++)
 		if(!strcmp(parser->variables[i].name, name))
 			return -1;
 	parser->variables = realloc(parser->variables, sizeof(*parser->variables) * (parser->nVariables + 1));
 	strcpy(parser->variables[parser->nVariables].name, name);
-	rx_getdeepestnodes(node, &deepestNodes, &nDeepestNodes);
-	if(nDeepestNodes > 1) {
-		const node_t exitNode = rx_alloc(&(struct regex_node) { .flags = RXFLAG_EMPTYGROUP, .nNodes = 0, .nodes = NULL });
-		for(uint32_t i = 0; i < nDeepestNodes; i++)
-			rx_addchild(deepestNodes[i], exitNode);
-	}
-	free(deepestNodes);
 	parser->variables[parser->nVariables++].node = node;
 	return 0;
 }
@@ -149,8 +138,7 @@ parse_regex(IOBUFFER *buf, node_t *pEntryNode, node_t *pExitNode)
 			break;
 		case '.':
 			rawNode.flags = 0;
-			rawNode.nNodes = 0;
-			rawNode.nodes = NULL;
+			rawNode.nodes[0] = 0;
 			memset(rawNode.tests, 0xff, sizeof(rawNode.tests));
 			TTOGGLE(rawNode.tests, '\n');
 			goto add_node;
@@ -165,39 +153,30 @@ parse_regex(IOBUFFER *buf, node_t *pEntryNode, node_t *pExitNode)
 			} else {
 				entryNode = exitNode = rx_alloc(&rawNode);
 			}
-			break;
-		case '*':
-			if(!check_condition())
-				return -1;
-			nodes[exitNode].flags |= RXFLAG_TRANSIENT | RXFLAG_REPEAT;
-			rx_addchild(exitNode, entryNode);
-			break;
-		case '+': 
-			if(!check_condition())
-				return -1;
-			nodes[exitNode].flags |= RXFLAG_REPEAT;
-			rx_addchild(exitNode, entryNode);
-			break;
-		case '?':
-			if(!check_condition())
-				return -1;
-			nodes[exitNode].flags |= RXFLAG_TRANSIENT;
-			break;
-		case '|': {
-			if(!check_condition())
-				return -1;
-			if(!entryNode) {
-				fprintf(stderr, "invalid use of or ('|')\n");
-				free(deepestNodes);
-				return -1;
+			switch(ch = bgetch(buf)) {
+			case '*':
+				nodes[exitNode].flags |= RXFLAG_TRANSIENT | RXFLAG_REPEAT;
+				rx_addchild(exitNode, exitNode);
+				break;
+			case '+': 
+				nodes[exitNode].flags |= RXFLAG_REPEAT;
+				rx_addchild(exitNode, exitNode);
+				break;
+			case '?':
+				nodes[exitNode].flags |= RXFLAG_TRANSIENT;
+				break;
+			case '|': {
+				deepestNodes = realloc(deepestNodes, sizeof(*deepestNodes) * (nDeepestNodes + 1));
+				deepestNodes[nDeepestNodes++] = exitNode;
+				const node_t node = rx_allocempty();
+				rx_addchild(node, entryNode);
+				entryNode = exitNode = node;
+				break;
 			}
-			deepestNodes = realloc(deepestNodes, sizeof(*deepestNodes) * (nDeepestNodes + 1));
-			deepestNodes[nDeepestNodes++] = exitNode;
-			const node_t node = rx_allocempty();
-			rx_addchild(node, entryNode);
-			entryNode = exitNode = node;
+			default:
+				bungetch(buf, ch);
+			}
 			break;
-		}
 		case '(': {
 			node_t n1, n2;
 			if(parse_regex(buf, &n1, &n2))
@@ -208,6 +187,29 @@ parse_regex(IOBUFFER *buf, node_t *pEntryNode, node_t *pExitNode)
 			} else {
 				entryNode = n1;
 				exitNode = n2;
+			}
+			switch(ch = bgetch(buf)) {
+			case '*':
+				nodes[n2].flags |= RXFLAG_TRANSIENT | RXFLAG_REPEAT;
+				rx_addchild(n2, n1);
+				break;
+			case '+': 
+				nodes[n2].flags |= RXFLAG_REPEAT;
+				rx_addchild(n2, n1);
+				break;
+			case '?':
+				nodes[n2].flags |= RXFLAG_TRANSIENT;
+				break;
+			case '|': {
+				deepestNodes = realloc(deepestNodes, sizeof(*deepestNodes) * (nDeepestNodes + 1));
+				deepestNodes[nDeepestNodes++] = n2;
+				const node_t node = rx_allocempty();
+				rx_addchild(node, n1);
+				entryNode = exitNode = node;
+				break;
+			}
+			default:
+				bungetch(buf, ch);
 			}
 			break;
 		}
@@ -235,11 +237,13 @@ end:
 int
 parse(struct parser *parser)
 {
+	// testing parse_regex function
 	node_t en, ex;
 	if(parse_regex(&parser->buf, &en, &ex) < 0)
 		return -1;
 	rx_addchild(parser->root, en);
 	return 0;
+	// the below code was before parse_regex was there, it is old code and will be replaced soon
 	int code = 0;
 	struct token tok;
 	// generally the last node received
@@ -262,7 +266,7 @@ parse(struct parser *parser)
 			break;
 		case TNEWLINE:
 			if(parser->onVariable) {
-				parser->cacheNode = rx_alloc(&(struct regex_node) { .flags = RXFLAG_EMPTYGROUP, .nodes = 0, .nNodes = 0 });
+				parser->cacheNode = rx_allocempty();
 				lNode = parser->cacheNode;
 			}
 			parser->onVariable = false;
@@ -351,7 +355,7 @@ parse(struct parser *parser)
 			}
 			clNode = tok.node;
 			if(tok.type == TACCVARIABLE) {
-				while(nodes[clNode].nNodes)
+				while(nodes[clNode].nodes[0])
 					clNode = nodes[clNode].nodes[0];
 			}
 			break;

@@ -10,8 +10,6 @@ bopen(IOBUFFER *buf, const char *fileName)
 		return -1;
 	buf->iRead = buf->iWrite = 0;
 	buf->fd = fd;
-	buf->record = NULL;
-	buf->nRecord = 0;
 	return 0;
 }
 
@@ -56,33 +54,8 @@ bungetch(IOBUFFER *buf, int ch)
 }
 
 int
-brecord(IOBUFFER *buf, int ch)
-{
-	buf->record = realloc(buf->record, buf->nRecord + 1);
-	ASSERT(buf->record, "Out of memory");
-	buf->record[buf->nRecord++] = ch;
-	return 0;
-}
-
-char *
-bsaverecord(IOBUFFER *buf)
-{
-	int32_t n;
-	char *rec;
-
-	n = buf->nRecord;
-	rec = malloc(n + 1);
-	ASSERT(rec, "Out of memory");
-	memcpy(rec, buf->record, n);
-	rec[n] = 0;
-	buf->nRecord = 0;
-	return rec;
-}
-
-int
 bclose(IOBUFFER *buf)
 {
-	free(buf->record);
 	return close(buf->fd);
 }
 

@@ -1,21 +1,13 @@
 #include "parsease.h"
 
 void
-tests_print(short tests[16])
+tests_print(uint16_t *tests)
 {
 	int start;
 	int count = 0;
-	bool pc = false;
-	for(int i = 0; i <= 0xff; i++) {
-		if(TCHECK(tests, i)) {
-			if(!count)
-				start = i;
-			count++;
-		} else {
-			if(!pc) {
-				putchar('[');
-				pc = true;
-			}
+	printf("[");
+	for(int i = 0;; i++) {
+		if(!TCHECK(tests, i) || i == 0x100) {
 			if(count > 3) {
 				if(isprint(start) && isprint(start + count - 1))
 					printf("%c-%c", start, start + count - 1);
@@ -38,73 +30,49 @@ tests_print(short tests[16])
 				}
 			}
 			count = 0;
+		} else {
+			if(!count)
+				start = i;
+			count++;
 		}
+		if(i == 0x100)
+			break;
 	}
-	putchar(pc ? ']' : '.');
-
+	printf("]");
 }
 
 void
 print_node_single(struct regex_node *node, int indent)
 {
-	if(node->flags & RXFLAG_CONTEXTMASK) {
-		int f = node->flags >> RXFLAG_CONTEXTSHIFT;
-		int i = 1;
-		while(f) {
-			if(f & 1)
-				break;
-			i++;
-			f >>= 1;
-		}
-		printf("%d:", i);
-		for(int i = 0; i < 2 * (indent - 1); i++)
-			putchar(' ');
-	} else
-		for(int i = 0; i < 2 * indent; i++)
-			putchar(' ');
+	for(int i = 0; i < 2 * indent; i++)
+		putchar(' ');
 	if(!(node->flags & RXFLAG_EMPTYGROUP))
 		tests_print(node->tests);
 	else
 		printf("[]");
-	if((node->flags & (RXFLAG_TRANSIENT | RXFLAG_REPEAT)) == (RXFLAG_TRANSIENT | RXFLAG_REPEAT))
-		printf("*");
-	else if(node->flags & RXFLAG_TRANSIENT)
-		printf("?");
-	else if(node->flags & RXFLAG_REPEAT)
-		printf("+");
 }
 
 void
-print_node(struct regex_node *node, int indent)
+print_node(struct regex_node *node, uint32_t indent, uint32_t *lc)
 {
-	for(node_t *s = node->nodes, *e = s + node->nNodes; s != e; s++) {
-		const node_t n = *s;
+	for(node_t n, *s = node->nodes; n = *s; s++) {
 		struct regex_node *const node = nodes + n;
+		if(!node->line)
+			node->line = (*lc)++;
+		printf("%4d ", node->line);
+		for(uint32_t i = 0; i < 2 * indent; i++)
+			putchar(' ');
 		if(node->flags & RXFLAG_VISITED) {
-			if(node->flags & RXFLAG_CONTEXTMASK) {
-				for(int i = 0; i < 2 * indent; i++)
-					putchar(' ');
-				int f = node->flags >> RXFLAG_CONTEXTSHIFT;
-				int i = 1;
-				while(f) {
-					if(f & 1)
-						break;
-					i++;
-					f >>= 1;
-				}
-				printf("%d.\n", i);
-				continue;
-			} else if(node->nNodes) {
-				for(int i = 0; i < 2 * (indent + 1); i++)
-					putchar(' ');
-				printf("*\n");
-			}
+			printf("*\n", node->line);
 			continue;
 		}
-		print_node_single(node, indent);
+		if(!(node->flags & RXFLAG_EMPTYGROUP))
+			tests_print(node->tests);
+		else
+			printf("[]");
 		printf("\n");
 		node->flags |= RXFLAG_VISITED;
-		print_node(node, indent + 1);
+		print_node(node, indent + 1, lc);
 		node->flags ^= RXFLAG_VISITED;
 	}
 }
@@ -115,7 +83,7 @@ print_node_logical(struct regex_node *node, int indent)
 	print_node_single(node, indent);
 	printf("\n");
 	if(node->flags & RXFLAG_VISITED) {
-		if(node->nNodes) {
+		if(node->nodes[0]) {
 			for(int i = 0; i < 2 * (indent + 1); i++)
 				putchar(' ');
 			printf("*\n");
@@ -125,8 +93,7 @@ print_node_logical(struct regex_node *node, int indent)
 	if(!(node->flags & (RXFLAG_TRANSIENT | RXFLAG_REPEAT)))
 		return;
 	node->flags |= RXFLAG_VISITED;
-	for(node_t *s = node->nodes, *e = s + node->nNodes; s != e; s++) {
-		const node_t n = *s;
+	for(node_t n, *s = node->nodes; n = *s; s++) {
 		struct regex_node *const node = nodes + n;
 		print_node_logical(node, indent + 1);
 	}
@@ -154,7 +121,10 @@ main(int argc, char **argv)
 		bclose(&parser.buf);
 		return -1;
 	}
-	print_node(nodes + parser.root, 0);
+	uint32_t lc = 1;
+	for(uint32_t i = 0; i < nNodes; i++)
+		nodes[i].line = 0;
+	print_node(nodes + parser.root, 0, &lc);
 	bclose(&parser.buf);
 	if(argc > 2) {
 		if(bopen(&parser.buf, argv[2])) {
@@ -180,7 +150,7 @@ main(int argc, char **argv)
 					pos--;
 				}
 				fprintf(stderr, "error: invalid token '%c' at %u:%u; failed at node:\n", atChar, line, col);
-				print_node_logical(nodes + path.nodes[path.nNodes - 1], 0);
+				print_node(nodes + path.nodes[path.nNodes - 1], 0, &lc);
 				break;
 			}
 		}
