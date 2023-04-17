@@ -1,0 +1,39 @@
+s: [\f\n\r\t\v ]
+
+string: ["]
+  ["]
+  [\\]. 0.
+  [] 0.
+
+value:
+  \string
+  \group
+  \array
+  [+\-]?[0-9]+
+    [.][0-9]+
+	[]
+  [t][r][u][e]
+  [f][a][l][s][e]
+  [n][u][l][l]
+
+variable: \s*\string\s*[:]\s*\value
+
+group: [{]
+  \variable
+    [,] 0.
+	[}]
+  \group
+    [,] 0.
+	[}]
+  [}]
+
+array: [\[]
+  \array
+    [,] 0.
+	[\]]
+  \value
+    [,] 0.
+	[\]]
+  [\]]
+
+\group
